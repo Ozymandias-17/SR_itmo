@@ -11,7 +11,7 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 import lpips
 from piq import DISTS
 
-from RRDBNet_arch import RRDBNet
+from nn_arch.RRDBNet_arch import RRDBNet
 from dataloader import DF2KDataset
 
 def validate():
@@ -19,7 +19,7 @@ def validate():
     parser.add_argument('--weights', type=str, default='./checkpoints/best_esrgan.pth', 
                         help='Путь к весам модели')
     parser.add_argument('--scale', type=int, default=2, 
-                        help='Масштаб увеличения (2, 3 или 4)')
+                        help='Масштаб увеличения (2 или 4)')
     parser.add_argument('--save_num', type=int, default=10, 
                         help='Количество визуальных результатов для сохранения')
     parser.add_argument('--output_dir', type=str, default='./validation_results', 
@@ -36,7 +36,7 @@ def validate():
     
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
-    print(f"[+] Успешно загружены веса: {args.weights}")
+    print(f"загружены веса: {args.weights}")
 
     val_dataset = DF2KDataset(split='val', scale=args.scale)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)

@@ -1,9 +1,12 @@
 import os
+import argparse
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.models import vgg19, VGG19_Weights
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -12,13 +15,13 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 import lpips
 from piq import DISTS
 
-from RRDBNet_arch import RRDBNet
-from VGG_feat import VGGFeatureExtractor
-from Discriminator import Discriminator
+from nn_arch.RRDBNet_arch import RRDBNet
+from nn_arch.VGG_feat import VGGFeatureExtractor
+from nn_arch.Discriminator import Discriminator
 from dataloader import DF2KDataset
 
 
-def train(epochs):
+def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Обучение на устройстве: {device}")
 
@@ -33,8 +36,11 @@ def train(epochs):
     # netG.load_state_dict(torch.load('pretrained_psnr_esrgan.pth'))
 
     # Оптимизаторы
-    optimizer_G = optim.AdamW(netG.parameters(), lr=1e-4)
-    optimizer_D = optim.AdamW(netD.parameters(), lr=1e-4)
+    optimizer_G = optim.AdamW(netG.parameters(), lr=args.initial_lr)
+    optimizer_D = optim.AdamW(netD.parameters(), lr=args.initial_lr)
+
+    scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.5, patience=5)
+    scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.5, patience=5)
 
     # Функции потерь
     criterion_pixel = nn.L1Loss().to(device)
@@ -47,32 +53,30 @@ def train(epochs):
     lpips_ = lpips.LPIPS(net='vgg').to(device) # LPIPS требует значения в диапазоне [-1, 1]
     dists_metric = DISTS().to(device)
 
-    # Веса лоссов (гиперпараметры из статьи)
     lambda_perceptual = 1.0
     lambda_adv = 5e-3
     lambda_pixel = 1e-2
 
-    train_loader = DataLoader(DF2KDataset('train', scale=2, lr_patch_size=16), batch_size=16, shuffle=True)
-    val_loader = DataLoader(DF2KDataset('val', scale=2), batch_size=1, shuffle=False)
+    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False)
 
     # Логирование
     writer = SummaryWriter(log_dir='./logs/esrgan_experiment')
     save_dir = './checkpoints'
     os.makedirs(save_dir, exist_ok=True)
 
-    epochs_ = epochs
     best_lpips = float('inf')
 
-    for epoch in range(epochs_):
+    for epoch in range(args.epochs):
         netG.train()
         netD.train()
         train_loss = 0.0
         
-        loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{epochs_}]")
+        loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{args.epochs}]")
         for lr_imgs, hr_imgs in loop:
             lr_imgs, hr_imgs = lr_imgs.to(device), hr_imgs.to(device)
 
-            # Обучение Дискриминатора
+            # дискриминатор
             optimizer_D.zero_grad()
             
             sr_imgs = netG(lr_imgs).detach()
@@ -87,7 +91,7 @@ def train(epochs):
             loss_D.backward()
             optimizer_D.step()
 
-            # Обучение Генератора
+            # генератор
             optimizer_G.zero_grad()
             sr_imgs = netG(lr_imgs)
             pred_fake_g = netD(sr_imgs)
@@ -100,10 +104,9 @@ def train(epochs):
             fake_features = vgg_extractor(sr_imgs)
             loss_percep = criterion_perceptual(fake_features, real_features)
             
-            # Adversarial Loss (Генератор хочет обмануть Дискриминатор)
             loss_adv = criterion_adv(pred_fake_g, torch.ones_like(pred_fake_g))
             
-            # Итоговый лосс Генератора
+            # лосс Генератора
             loss_G = (lambda_pixel * loss_pixel) + (lambda_perceptual * loss_percep) + (lambda_adv * loss_adv)
             
             loss_G.backward()
@@ -118,13 +121,16 @@ def train(epochs):
 
         # Валидация
         netG.eval()
-        torch.cuda.empty_cache()
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         val_psnr, val_ssim, val_lpips, val_dists = 0.0, 0.0, 0.0, 0.0
         
         with torch.no_grad():
             for lr_imgs, hr_imgs in val_loader:
                 lr_imgs, hr_imgs = lr_imgs.to(device), hr_imgs.to(device)
-                sr_imgs = torch.clamp(netG(lr_imgs), 0, 1) # Обрезаем значения до валидных [0, 1]
+                sr_imgs = torch.clamp(netG(lr_imgs), 0, 1) # [0, 1]
 
                 val_psnr += psnr_metric(sr_imgs, hr_imgs).item()
                 val_ssim += ssim_metric(sr_imgs, hr_imgs).item()
@@ -138,20 +144,44 @@ def train(epochs):
 
         print(f"Val - PSNR: {val_psnr:.2f} | Val - SSSIM: {val_ssim:.2f} | LPIPS: {val_lpips:.4f} | DISTS: {val_dists:.4f}")
 
-        # Сохранение по лучшей перцептивной метрике (LPIPS стремится к 0)
+        scheduler_G.step(val_lpips)
+        scheduler_D.step(val_lpips)
+
+        current_lr_G = optimizer_G.param_groups[0]['lr']
+        current_lr_D = optimizer_D.param_groups[0]['lr']
+
+        # Сохранение по лучшей перцептивной метрике
         if val_lpips < best_lpips:
             best_lpips = val_lpips
             torch.save(netG.state_dict(), './checkpoints/best_esrgan.pth')
-            print("[*] Лучшая модель сохранена (по LPIPS)")
+            print("Лучшая модель сохранена")
 
-        # Логируем в Tensorboard
+        # Tensorboard
         writer.add_scalar('Metric/Val_PSNR', val_psnr, epoch)
         writer.add_scalar('Metric/Val_SSIM', val_ssim, epoch)
         writer.add_scalar('Metric/Val_LPIPS', val_lpips, epoch)
         writer.add_scalar('Metric/Val_DISTS', val_dists, epoch)
+        writer.add_scalar('LR/Generator', current_lr_G, epoch)
+        writer.add_scalar('LR/Discriminator', current_lr_D, epoch)
 
     writer.close()
     print("Обучение завершено.")
 
+
 if __name__ == '__main__':
-    train(epochs=1)
+    parser = argparse.ArgumentParser(description="ESRGAN Training")
+    
+    parser.add_argument('--epochs', type=int, default=10, 
+                        help='Количество эпох обучения (по умолчанию: 10)')
+    parser.add_argument('--batch_size', type=int, default=32, 
+                        help='Размер батча (по умолчанию: 32)')
+    parser.add_argument('--lr_patch_size', type=int, default=64, 
+                        help='Размер патча низкого разрешения LR (по умолчанию: 64)')
+    parser.add_argument('--initial_lr', type=float, default=1e-4, 
+                        help='Начальный Learning Rate для AdamW (по умолчанию: 1e-4)')
+    parser.add_argument('--scale', type=int, default=2, 
+                        help='Коэффициент масштабирования(по умолчанию: 2)')
+    
+    parsed_args = parser.parse_args()
+    
+    train(parsed_args)
