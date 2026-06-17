@@ -94,13 +94,13 @@ if __name__ == '__main__':
     scale_factor = 2
     test_dataset = DF2KDataset(split='train', scale=scale_factor, downgrade='unknown')
     
-    print(f"Всего изображений в сплите: {len(test_dataset)}")
-    print(f"Путь HR: {test_dataset.hr_dir}")
-    print(f"Путь LR: {test_dataset.lr_dir}")
+    print(f"Images in split: {len(test_dataset)}")
+    print(f"Path HR: {test_dataset.hr_dir}")
+    print(f"Path LR: {test_dataset.lr_dir}")
     print("-"*50)
 
     # соответствие имен файлов
-    print("Проверка маппинга имен файлов:")
+    print("Check file names mapping:")
     for i in range(min(5, len(test_dataset))):
         hr_name = test_dataset.hr_filenames[i]
         name_without_ext, ext = os.path.splitext(hr_name)
@@ -109,23 +109,23 @@ if __name__ == '__main__':
         hr_exists = os.path.exists(os.path.join(test_dataset.hr_dir, hr_name))
         lr_exists = os.path.exists(os.path.join(test_dataset.lr_dir, expected_lr_name))
         
-        print(f"  Пара {i+1}:")
-        print(f"    -> HR: {hr_name} (Существует: {hr_exists})")
-        print(f"    -> LR: {expected_lr_name} (Существует: {lr_exists})")
+        print(f"  Pair {i+1}:")
+        print(f"    -> HR: {hr_name} (Exist: {hr_exists})")
+        print(f"    -> LR: {expected_lr_name} (Exist: {lr_exists})")
 
     print("-"*50)
 
     # тензоры
-    print("Анализ тензоров первого элемента:")
+    print("Tensors of first element:")
     lr_tensor, hr_tensor = test_dataset[0]
     
-    print(f"  Размер LR тензора [C, H, W]: {list(lr_tensor.shape)}")
-    print(f"  Размер HR тензора [C, H, W]: {list(hr_tensor.shape)}")
-    print(f"  Тип данных: {lr_tensor.dtype}")
-    print(f"  Диапазон значений LR: [{lr_tensor.min().item():.2f}, {lr_tensor.max().item():.2f}]")
+    print(f"  Size LR tensor [C, H, W]: {list(lr_tensor.shape)}")
+    print(f"  Size HR tensor [C, H, W]: {list(hr_tensor.shape)}")
+    print(f"  Data type: {lr_tensor.dtype}")
+    print(f"  Data range LR: [{lr_tensor.min().item():.2f}, {lr_tensor.max().item():.2f}]")
     
     # проверка масштаба
     calculated_scale_h = hr_tensor.shape[1] / lr_tensor.shape[1]
     calculated_scale_w = hr_tensor.shape[2] / lr_tensor.shape[2]
-    print(f"  Фактический масштаб по высоте: {calculated_scale_h}x (Ожидалось: {scale_factor}x)")
-    print(f"  Фактический масштаб по ширине: {calculated_scale_w}x (Ожидалось: {scale_factor}x)")
+    print(f"  Scale at height: {calculated_scale_h}x (Expected: {scale_factor}x)")
+    print(f"  Scale at width: {calculated_scale_w}x (Expected: {scale_factor}x)")
