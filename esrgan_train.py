@@ -84,8 +84,8 @@ def train(args):
             pred_real = netD(hr_imgs)
             pred_fake = netD(sr_imgs)
             
-            loss_d_real = criterion_adv(pred_real, torch.ones_like(pred_real))
-            loss_d_fake = criterion_adv(pred_fake, torch.zeros_like(pred_fake))
+            loss_d_real = criterion_adv(pred_real - torch.mean(pred_fake), torch.ones_like(pred_real))
+            loss_d_fake = criterion_adv(pred_fake - torch.mean(pred_real), torch.zeros_like(pred_fake))
             loss_D = (loss_d_real + loss_d_fake) / 2
             
             loss_D.backward()
@@ -95,6 +95,7 @@ def train(args):
             optimizer_G.zero_grad()
             sr_imgs = netG(lr_imgs)
             pred_fake_g = netD(sr_imgs)
+            pred_real_g = netD(hr_imgs).detach()
 
             # Pixel Loss (L1)
             loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
@@ -104,7 +105,10 @@ def train(args):
             fake_features = vgg_extractor(sr_imgs)
             loss_percep = criterion_perceptual(fake_features, real_features)
             
-            loss_adv = criterion_adv(pred_fake_g, torch.ones_like(pred_fake_g))
+            # Relativistic Adversarial Loss
+            loss_g_real = criterion_adv(pred_real_g - torch.mean(pred_fake_g), torch.zeros_like(pred_real_g))
+            loss_g_fake = criterion_adv(pred_fake_g - torch.mean(pred_real_g), torch.ones_like(pred_fake_g))
+            loss_adv = (loss_g_real + loss_g_fake) / 2
             
             # лосс Генератора
             loss_G = (lambda_pixel * loss_pixel) + (lambda_perceptual * loss_percep) + (lambda_adv * loss_adv)
@@ -117,7 +121,7 @@ def train(args):
             loop.set_postfix(L_G=loss_G.item(), L_D=loss_D.item())
 
         avg_train_loss = train_loss / len(train_loader)
-        writer.add_scalar('Loss/Train (L2)', avg_train_loss, epoch)
+        writer.add_scalar('Loss/Train', avg_train_loss, epoch)
 
         # Валидация
         netG.eval()
