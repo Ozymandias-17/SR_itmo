@@ -14,8 +14,9 @@ from piq import DISTS
 from nn_arch.RRDBNet_arch import RRDBNet
 from dataloader import DF2KDataset
 
+
 def validate():
-    parser = argparse.ArgumentParser(description='ESRGAN Validation/Testing Script')
+    parser = argparse.ArgumentParser(description='ESRGAN Testing')
     parser.add_argument('--weights', type=str, default='./checkpoints/best_esrgan.pth', 
                         help='Путь к весам модели')
     parser.add_argument('--scale', type=int, default=2, 
@@ -24,6 +25,7 @@ def validate():
                         help='Количество визуальных результатов для сохранения')
     parser.add_argument('--output_dir', type=str, default='./validation_results', 
                         help='Папка для сохранения визуальных результатов')
+    
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -83,10 +85,62 @@ def validate():
 
     print("\n")
     print(f"РЕЗУЛЬТАТЫ ВАЛИДАЦИИ (Scale: X{args.scale})")
-    print(f"Средний PSNR:  {avg_psnr:.2f} dB  (Выше — лучше)")
-    print(f"Средний SSIM:  {avg_ssim:.4f}     (Ближе к 1 — лучше)")
-    print(f"Средний LPIPS: {avg_lpips:.4f}    (Ниже — лучше, перцептивная)")
-    print(f"Средний DISTS: {avg_dists:.4f}    (Ниже — лучше, текстурная)")
+    print(f"Средний PSNR:  {avg_psnr:.2f} dB")
+    print(f"Средний SSIM:  {avg_ssim:.4f}")
+    print(f"Средний LPIPS: {avg_lpips:.4f}")
+    print(f"Средний DISTS: {avg_dists:.4f}")
+
+
+def inference():
+
+    parser = argparse.ArgumentParser(description='ESRGAN Inference')
+    parser.add_argument('--input', type=str, required=True, 
+                        help='Путь к входному низкоразрешенному изображению (LR)')
+    parser.add_argument('--output', type=str, default='./results/output.png', 
+                        help='Путь, куда сохранить полученный апскейл (HR)')
+    parser.add_argument('--weights', type=str, default='./checkpoints/best_esrgan.pth', 
+                        help='Путь к сохраненным весам модели (.pth)')
+    args = parser.parse_args()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Устройство: {device}")
+
+    model = RRDBNet(in_nc=3, out_nc=3, nf=64, nb=23).to(device)
+
+    if not os.path.exists(args.weights):
+        raise FileNotFoundError(f"Веса не найдены по пути {args.weights}.")
+
+    state_dict = torch.load(args.weights, map_location=device)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    if not os.path.exists(args.input):
+        raise FileNotFoundError(f"Входное изображение {args.input} не найдено.")
+
+    img = Image.open(args.input).convert('RGB')
+    orig_w, orig_h = img.size
+    print(f"[i] Исходное разрешение: {orig_w}x{orig_h}")
+
+    transform = transforms.ToTensor()
+    img_tensor = transform(img).unsqueeze(0).to(device) # [1, 3, H, W]
+
+    print("Запуск апскейлинга...")
+    with torch.no_grad(): 
+        output_tensor = model(img_tensor)
+
+    output_tensor = torch.clamp(output_tensor, 0, 1)
+
+    output_tensor = output_tensor.squeeze(0)
+
+    output_dir = os.path.dirname(args.output)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    save_image(output_tensor, args.output)
+    
+    result_img = Image.open(args.output)
+    new_w, new_h = result_img.size
+    print(f"Результат сохранен в: {args.output}")
 
 
 if __name__ == '__main__':
