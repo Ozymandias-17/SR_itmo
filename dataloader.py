@@ -70,11 +70,11 @@ class DF2KDataset(Dataset):
             hr_y = lr_y * self.scale
             hr_patch_size = self.lr_patch_size * self.scale
             
-            # Кропаем изображения
+            # Кроп
             lr_image = lr_image.crop((lr_x, lr_y, lr_x + self.lr_patch_size, lr_y + self.lr_patch_size))
             hr_image = hr_image.crop((hr_x, hr_y, hr_x + hr_patch_size, hr_y + hr_patch_size))
             
-            # Аугментация: Случайное отзеркаливание
+            # Случайное отзеркаливание
             if random.random() > 0.5:
                 lr_image = TF.hflip(lr_image)
                 hr_image = TF.hflip(hr_image)
