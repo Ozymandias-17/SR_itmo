@@ -6,6 +6,8 @@ from tqdm import tqdm
 from torchvision.utils import save_image, make_grid
 import torchvision.transforms as transforms
 from PIL import Image
+import json
+from datetime import datetime
 
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 import lpips
@@ -89,6 +91,18 @@ def validate():
     print(f"Средний SSIM:  {avg_ssim:.4f}")
     print(f"Средний LPIPS: {avg_lpips:.4f}")
     print(f"Средний DISTS: {avg_dists:.4f}")
+
+    res = {"timestamp": datetime.now().isoformat(timespec="seconds"),
+           "psnr": avg_psnr,
+           "ssim": avg_ssim,
+           "lpips": avg_lpips,
+           "dists": avg_dists}
+
+    res_path = os.path.join(args.output_dir, "metrics.json")
+    with open(res_path, "w", encoding="utf-8") as f:
+        json.dump(res, f, ensure_ascii=False, indent=4)
+
+    print(f"Метрики сохранены в: {res_path}")
 
 
 def inference():
