@@ -26,12 +26,12 @@ def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Train on device: {device}")
 
-    if args.mode == 'rgb2':
-        nf_base, gc_base = 32, 16
-        print(f"Mode 'rgb2': number of channels (nf, gc) is halved (nf={nf_base}, gc={gc_base}).")
-    elif args.mode == 'orig':
+    if args.mode == 'orig':
         nf_base, gc_base = 64, 32
-        print(f"Mode 'orig': standart channels (nf={nf_base}, gc={gc_base}).")
+        print(f"Mode 'orig': number of channels (nf, gc) is halved (nf={nf_base}, gc={gc_base}).")
+    elif args.mode == 'rgb2':
+        nf_base, gc_base = 32, 16
+        print(f"Mode 'rgb2': standart channels (nf={nf_base}, gc={gc_base}).")
 
     # Инициализация моделей
     netG = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
