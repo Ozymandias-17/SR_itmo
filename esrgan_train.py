@@ -41,7 +41,7 @@ def train(args):
     for p in vgg_extractor.parameters():
         p.requires_grad = False
     
-    # netG.load_state_dict(torch.load('pretrained_psnr_esrgan.pth'))
+    # netG.load_state_dict(torch.load(f'pretrained_gn_{args.mode}.pth'))
 
     # Оптимизаторы
     optimizer_G = optim.AdamW(netG.parameters(), lr=args.lr)
