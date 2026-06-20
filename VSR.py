@@ -4,18 +4,19 @@ import glob
 import cv2
 import numpy as np
 import torch
-import nn_arch.RRDBNet_arch as arch
+from nn_arch.RRDBNet_arch import RRDBNet
+from nn_arch.YUV_net_arch import YUV_Generator
 
 
 def run_esrgan(input_folder: str,
                output_folder: str,
-               mode: str = 'orig'):
+               mode: str = 'rgb'):
     """
     Запускает ESRGAN для апскейла кадров.
 
     :param input_folder: папка с входными кадрами
     :param output_folder: папка для SR-кадров
-    :param mode: режим esrgan модели (orig, rgb2, yuv)
+    :param mode: режим esrgan модели (rgb, rgb_lpips, yuv)
     """
 
     if not os.path.exists(input_folder):
@@ -30,14 +31,21 @@ def run_esrgan(input_folder: str,
 
     model_path = f'./checkpoints/esrgan_{mode}.pth'
 
-    if mode == 'orig':
+    if mode == 'rgb':
         nf_base, gc_base = 64, 32
-        print(f"Mode 'orig': number of channels (nf, gc) is halved (nf={nf_base}, gc={gc_base}).")
-    elif mode == 'rgb2':
-        nf_base, gc_base = 32, 16
-        print(f"Mode 'rgb2': standart channels (nf={nf_base}, gc={gc_base}).")
+        model = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
+        print(f"Model 'rgb': standart channels (nf={nf_base}, gc={gc_base}).")
+    elif mode == 'rgb_lpips':
+        nf_base, gc_base = 64, 32
+        model = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
+        print(f"Model 'rgb2': standart channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
+    elif mode == 'yuv':
+        nf_base, gc_base = 64, 32
+        model = YUV_Generator(in_nc=1, out_nc=1, nf=nf_base, nb=23, gc=gc_base).to(device)
+        print(f"Model 'yuv': prior channel y (in_nc=1, out_nc=1, nf={nf_base}, gc={gc_base}).")
+    else:
+        raise ValueError(f"Unknown model {mode}")
 
-    model = arch.RRDBNet(3, 3, nf=nf_base, nb=23, gc=gc_base)
     model.load_state_dict(torch.load(model_path), strict=True)
     model.eval()
     model = model.to(device)

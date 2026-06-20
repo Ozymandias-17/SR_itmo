@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import MultiStepLR
 from torchvision.models import vgg19, VGG19_Weights
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -17,6 +17,7 @@ import lpips
 from piq import DISTS
 
 from nn_arch.RRDBNet_arch import RRDBNet
+from nn_arch.YUV_net_arch import YUV_Generator, rgb_to_yuv
 from nn_arch.VGG_feat import VGGFeatureExtractor
 from nn_arch.Discriminator import Discriminator
 from dataloader import DF2KDataset
@@ -26,29 +27,35 @@ def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Train on device: {device}")
 
-    if args.mode == 'orig':
+    if args.model == 'rgb':
         nf_base, gc_base = 64, 32
-        print(f"Mode 'orig': number of channels (nf, gc) is halved (nf={nf_base}, gc={gc_base}).")
-    elif args.mode == 'rgb2':
-        nf_base, gc_base = 32, 16
-        print(f"Mode 'rgb2': standart channels (nf={nf_base}, gc={gc_base}).")
+        netG = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
+        print(f"Model 'rgb': standart channels (nf={nf_base}, gc={gc_base}).")
+    elif args.model == 'rgb_lpips':
+        nf_base, gc_base = 64, 32
+        netG = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
+        print(f"Model 'rgb2': standart channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
+    elif args.model == 'yuv':
+        nf_base, gc_base = 64, 32
+        netG = YUV_Generator(in_nc=1, out_nc=1, nf=nf_base, nb=23, gc=gc_base).to(device)
+        print(f"Model 'yuv': prior channel y (in_nc=1, out_nc=1, nf={nf_base}, gc={gc_base}).")
+    else:
+        raise ValueError(f"Unknown model {args.model}")
 
     # Инициализация моделей
-    netG = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
     netD = Discriminator(in_nc=3, nf=nf_base).to(device)
     vgg_extractor = VGGFeatureExtractor().to(device)
     vgg_extractor.eval()
     for p in vgg_extractor.parameters():
         p.requires_grad = False
     
-    # netG.load_state_dict(torch.load(f'pretrained_gn_{args.mode}.pth'))
+    # netG.load_state_dict(torch.load(f'pretrained_gn_{args.model}.pth'))
 
     # Оптимизаторы
     optimizer_G = optim.AdamW(netG.parameters(), lr=args.lr)
     optimizer_D = optim.AdamW(netD.parameters(), lr=args.lr)
-
-    scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.5, patience=10)
-    scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.5, patience=10)
+    scheduler_G = MultiStepLR(optimizer_G, milestones=[int(args.epochs * 0.125), int(args.epochs * 0.25), int(args.epochs * 0.5), int(args.epochs * 0.75)], gamma=0.5) # сохранение пропорций для эпох
+    scheduler_D = MultiStepLR(optimizer_D, milestones=[int(args.epochs * 0.125), int(args.epochs * 0.25), int(args.epochs * 0.5), int(args.epochs * 0.75)], gamma=0.5)
 
     # Функции потерь
     criterion_pixel = nn.L1Loss().to(device)
@@ -58,11 +65,8 @@ def train(args):
     # Инициализация метрик
     psnr_metric = PeakSignalNoiseRatio(data_range=1.0).to(device)
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
-    lpips_ = lpips.LPIPS(net='vgg').to(device) # LPIPS требует значения в диапазоне [-1, 1]
-    lpips_.eval()
-    for p in lpips_.parameters():
-        p.requires_grad = False
-        
+    lpips_ = lpips.LPIPS(net='vgg').to(device).eval().requires_grad_(False) # LPIPS требует значения в диапазоне [-1, 1]
+
     dists_metric = DISTS().to(device)
     dists_metric.eval()
     for p in dists_metric.parameters():
@@ -76,7 +80,7 @@ def train(args):
     val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False)
 
     # Логирование
-    writer = SummaryWriter(log_dir=f'./logs/esrgan_{args.mode}')
+    writer = SummaryWriter(log_dir=f'./logs/esrgan_{args.model}')
     save_dir = './checkpoints'
     os.makedirs(save_dir, exist_ok=True)
 
@@ -109,11 +113,11 @@ def train(args):
             
             pred_real = netD(hr_imgs)
             pred_fake = netD(sr_imgs.detach())
-            
+
             loss_d_real = criterion_adv(pred_real - torch.mean(pred_fake), torch.ones_like(pred_real))
             loss_d_fake = criterion_adv(pred_fake - torch.mean(pred_real), torch.zeros_like(pred_fake))
             loss_D = (loss_d_real + loss_d_fake) / 2
-            
+
             loss_D.backward()
             optimizer_D.step()
 
@@ -122,20 +126,39 @@ def train(args):
             pred_fake_g = netD(sr_imgs)
             pred_real_g = netD(hr_imgs).detach()
 
-            # Pixel Loss (L1)
-            loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
-            
-            # Perceptual Loss (VGG)
-            real_features = vgg_extractor(hr_imgs).detach()
-            fake_features = vgg_extractor(sr_imgs)
-            loss_percep = criterion_perceptual(fake_features, real_features)
-            
+            # Pixel Loss (L1), Perceptual Loss (VGG)
+            if args.model == 'rgb':
+                loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
+
+                real_features = vgg_extractor(hr_imgs).detach()
+                fake_features = vgg_extractor(sr_imgs)
+                loss_percep = criterion_perceptual(fake_features, real_features)
+
+            elif args.model == 'rgb_lpips':
+                loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
+                loss_percep = lpips_.forward(sr_imgs, hr_imgs, normalize=True).sum()
+
+            elif args.model == 'yuv':
+                yuv_sr = rgb_to_yuv(sr_imgs)
+                yuv_hr = rgb_to_yuv(hr_imgs)
+                y_sr = yuv_sr[:, 0:1, :, :]
+                y_hr = yuv_hr[:, 0:1, :, :]
+
+                loss_pixel = criterion_pixel(y_sr, y_hr)
+
+                real_features = vgg_extractor(hr_imgs).detach()
+                fake_features = vgg_extractor(sr_imgs)
+                loss_percep = criterion_perceptual(fake_features, real_features)
+
+            else:
+                raise ValueError(f"Unknown model {args.model}")
+
             # Relativistic Adversarial Loss
             loss_g_real = criterion_adv(pred_real_g - torch.mean(pred_fake_g), torch.zeros_like(pred_real_g))
             loss_g_fake = criterion_adv(pred_fake_g - torch.mean(pred_real_g), torch.ones_like(pred_fake_g))
             loss_adv = (loss_g_real + loss_g_fake) / 2
-            
-            # лосс Генератора
+
+            # Generator Total Loss
             loss_G = (lambda_pixel * loss_pixel) + (lambda_perceptual * loss_percep) + (lambda_adv * loss_adv)
             
             loss_G.backward()
@@ -144,7 +167,7 @@ def train(args):
             train_loss += loss_G.item()
 
             step_time = time.perf_counter() - step_start_time
-            current_fps = args.batch_size / step_time
+            current_fps = lr_imgs.size(0) / step_time
             total_fps += current_fps
 
             loop.set_postfix(L_G=loss_G.item(), L_D=loss_D.item(), FPS=f"{current_fps:.1f}")
@@ -176,11 +199,31 @@ def train(args):
                 pred_fake_g = netD(sr_imgs)
                 pred_real_g = netD(hr_imgs)
 
-                loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
+                if args.model == 'rgb':
+                    loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
 
-                real_features = vgg_extractor(hr_imgs)
-                fake_features = vgg_extractor(sr_imgs)
-                loss_percep = criterion_perceptual(fake_features, real_features)
+                    real_features = vgg_extractor(hr_imgs).detach()
+                    fake_features = vgg_extractor(sr_imgs)
+                    loss_percep = criterion_perceptual(fake_features, real_features)
+
+                elif args.model == 'rgb_lpips':
+                    loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
+                    loss_percep = lpips_.forward(sr_imgs, hr_imgs, normalize=True).sum()
+
+                elif args.model == 'yuv':
+                    yuv_sr = rgb_to_yuv(sr_imgs)
+                    yuv_hr = rgb_to_yuv(hr_imgs)
+                    y_sr = yuv_sr[:, 0:1, :, :]
+                    y_hr = yuv_hr[:, 0:1, :, :]
+
+                    loss_pixel = criterion_pixel(y_sr, y_hr)
+
+                    real_features = vgg_extractor(hr_imgs).detach()
+                    fake_features = vgg_extractor(sr_imgs)
+                    loss_percep = criterion_perceptual(fake_features, real_features)
+
+                else:
+                    raise ValueError(f"Unknown model {args.model}")
 
                 loss_g_real = criterion_adv(pred_real_g - torch.mean(pred_fake_g), torch.zeros_like(pred_real_g))
                 loss_g_fake = criterion_adv(pred_fake_g - torch.mean(pred_real_g), torch.ones_like(pred_fake_g))
@@ -204,8 +247,8 @@ def train(args):
 
         print(f"Val - PSNR: {val_psnr:.2f} | Val - SSIM: {val_ssim:.2f} | LPIPS: {val_lpips:.4f} | DISTS: {val_dists:.4f}")
 
-        scheduler_G.step(val_lpips)
-        scheduler_D.step(val_lpips)
+        scheduler_G.step()
+        scheduler_D.step()
 
         current_lr_G = optimizer_G.param_groups[0]['lr']
         current_lr_D = optimizer_D.param_groups[0]['lr']
@@ -213,7 +256,7 @@ def train(args):
         # Сохранение по лучшей перцептивной метрике
         if val_lpips < best_lpips:
             best_lpips = val_lpips
-            torch.save(netG.state_dict(), f'./checkpoints/esrgan_{args.mode}.pth')
+            torch.save(netG.state_dict(), f'./checkpoints/esrgan_{args.model}.pth')
             print("Best model is saved.")
 
         # Tensorboard
@@ -239,12 +282,12 @@ def train(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ESRGAN Training")
 
-    parser.add_argument('--mode', type=str, default='orig', 
-                        help='Model: orig, rgb2, yuv (default: orig)')
+    parser.add_argument('--model', type=str, default='rgb', 
+                        help='Model: rgb, rgb_lpips, yuv (default: rgb)')
     parser.add_argument('--epochs', type=int, default=200, 
                         help='Number of epochs (default: 200)')
-    parser.add_argument('--batch_size', type=int, default=32, 
-                        help='default: 32')
+    parser.add_argument('--batch_size', type=int, default=16, 
+                        help='default: 16')
     parser.add_argument('--lr_patch_size', type=int, default=64, 
                         help='Patch size of LR images (default: 64)')
     parser.add_argument('--lr', type=float, default=1e-4, 
