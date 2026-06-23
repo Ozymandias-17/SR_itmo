@@ -318,8 +318,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--model', type=str, default='rgb', 
                         help='Model: rgb, rgb_lpips, yuv (default: rgb)')
-    parser.add_argument('--epochs', type=int, default=200, 
-                        help='Number of epochs (default: 200)')
+    parser.add_argument('--epochs', type=int, default=100, 
+                        help='Number of epochs (default: 100)')
     parser.add_argument('--batch_size', type=int, default=16, 
                         help='default: 16')
     parser.add_argument('--lr_patch_size', type=int, default=64, 

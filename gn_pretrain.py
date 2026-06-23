@@ -193,7 +193,7 @@ def train_psnr(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PSNR Pre-Training")
     parser.add_argument('--model', type=str, default='rgb', help='Model: rgb, rgb_lpips, yuv')
-    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr_patch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=2e-4)
