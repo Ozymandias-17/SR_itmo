@@ -61,42 +61,6 @@ def train(args):
     
     # netG.load_state_dict(torch.load(f'./checkpoints/pretrained_gn_{args.model}.pth'))
 
-    '''
-    pretrained_path = f'./checkpoints/ESRGAN_PSNR_SRx4_DF2K_official-150ff491.pth'
-    if os.path.exists(pretrained_path):
-        print(f"Loading pretrained generator weights from {pretrained_path}...")
-        state_dict = torch.load(pretrained_path, map_location=device)
-        
-        if args.model == 'yuv':
-            has_prefix = any(k.startswith('y_net.') for k in state_dict.keys())
-            
-            if not has_prefix:
-                # префикс 'y_net.'
-                new_state_dict = {}
-                for k, v in state_dict.items():
-                    # обработка слоев ввода/вывода, если они имели 3 канала (RGB), а стали 1 (Y)
-                    if k == 'conv_first.weight' and v.shape[1] == 3:
-                        print("Adapting conv_first from 3 channels to 1 channel (YUV)...")
-                        v_y = 0.299 * v[:, 0:1, :, :] + 0.587 * v[:, 1:2, :, :] + 0.114 * v[:, 2:3, :, :]
-                        v = v_y
-                    if k == 'conv_last.weight' and v.shape[0] == 3:
-                        print("Adapting conv_last from 3 channels to 1 channel (YUV)...")
-                        v = v.mean(dim=0, keepdim=True)
-                        
-                    new_state_dict[f'y_net.{k}'] = v
-                state_dict = new_state_dict
-            
-            netG.load_state_dict(state_dict, strict=False)
-        else:
-            netG.load_state_dict(state_dict, strict=True)
-        
-        print("Generator weights loaded successfully")
-    
-    else:
-        print(f"Warning: Pretrained weights {pretrained_path} not found. Training from scratch.")
-
-    '''
-
     # Оптимизаторы
     steps_per_epoch = len(train_loader)
     total_iters = args.epochs * steps_per_epoch
