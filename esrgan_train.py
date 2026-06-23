@@ -10,7 +10,8 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 from torchvision.models import vgg19, VGG19_Weights
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+import logging
+from utils import AverageMeter
 
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 import lpips
@@ -19,22 +20,23 @@ from piq import DISTS
 from nn_arch.RRDBNet_arch import RRDBNet
 from nn_arch.YUV_net_arch import YUV_Generator, rgb_to_yuv
 from nn_arch.VGG_feat import VGGFeatureExtractor
-from nn_arch.Discriminator import Discriminator
+from nn_arch.Discriminator import VGGDiscriminator
 from dataloader import DF2KDataset
 
 
 def train(args):
+    logger = logging.getLogger('ESRGAN')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Train on device: {device}")
+    logger.info(f"Train on device: {device}")
 
     if args.model == 'rgb':
         nf_base, gc_base = 64, 32
         netG = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
-        print(f"Model 'rgb': standart channels (nf={nf_base}, gc={gc_base}).")
+        print(f"Model 'rgb': standard channels (nf={nf_base}, gc={gc_base}).")
     elif args.model == 'rgb_lpips':
         nf_base, gc_base = 64, 32
         netG = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
-        print(f"Model 'rgb2': standart channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
+        print(f"Model 'rgb_lpips': standard channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
     elif args.model == 'yuv':
         nf_base, gc_base = 64, 32
         netG = YUV_Generator(in_nc=1, out_nc=1, nf=nf_base, nb=23, gc=gc_base).to(device)
@@ -42,20 +44,25 @@ def train(args):
     else:
         raise ValueError(f"Unknown model {args.model}")
 
+    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False)
+    
     # Инициализация моделей
-    netD = Discriminator(in_nc=3, nf=nf_base).to(device)
+    netD = VGGDiscriminator(in_nc=3, nf=nf_base).to(device)
     vgg_extractor = VGGFeatureExtractor().to(device)
     vgg_extractor.eval()
     for p in vgg_extractor.parameters():
         p.requires_grad = False
     
-    # netG.load_state_dict(torch.load(f'pretrained_gn_{args.model}.pth'))
+    # netG.load_state_dict(torch.load(f'./checkpoints/pretrained_gn_{args.model}.pth'))
 
     # Оптимизаторы
+    steps_per_epoch = len(train_loader)
+    total_iters = args.epochs * steps_per_epoch
     optimizer_G = optim.AdamW(netG.parameters(), lr=args.lr)
     optimizer_D = optim.AdamW(netD.parameters(), lr=args.lr)
-    scheduler_G = MultiStepLR(optimizer_G, milestones=[int(args.epochs * 0.125), int(args.epochs * 0.25), int(args.epochs * 0.5), int(args.epochs * 0.75)], gamma=0.5) # сохранение пропорций для эпох
-    scheduler_D = MultiStepLR(optimizer_D, milestones=[int(args.epochs * 0.125), int(args.epochs * 0.25), int(args.epochs * 0.5), int(args.epochs * 0.75)], gamma=0.5)
+    scheduler_G = MultiStepLR(optimizer_G, milestones=[int(total_iters * 0.125), int(total_iters * 0.25), int(total_iters * 0.5), int(total_iters * 0.75)], gamma=0.5) # сохранение пропорций
+    scheduler_D = MultiStepLR(optimizer_D, milestones=[int(total_iters * 0.125), int(total_iters * 0.25), int(total_iters * 0.5), int(total_iters * 0.75)], gamma=0.5)
 
     # Функции потерь
     criterion_pixel = nn.L1Loss().to(device)
@@ -76,15 +83,17 @@ def train(args):
     lambda_adv = 5e-3
     lambda_pixel = 1e-2
 
-    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False)
-
     # Логирование
     writer = SummaryWriter(log_dir=f'./logs/esrgan_{args.model}')
     save_dir = './checkpoints'
     os.makedirs(save_dir, exist_ok=True)
 
+    timer_iter = AverageMeter()
+    loss_meter = AverageMeter()
+
     best_lpips = float('inf')
+    print_freq = 100
+    current_iter = 0
     total_training_start_time = time.perf_counter()
 
     for epoch in range(args.epochs):
@@ -95,10 +104,12 @@ def train(args):
         train_psnr, train_ssim = 0.0, 0.0
         total_fps = 0.0
         epoch_start_time = time.perf_counter()
+        iter_start_time = time.time()
         
-        loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{args.epochs}]")
-        for lr_imgs, hr_imgs in loop:
+        for lr_imgs, hr_imgs in train_loader:
             step_start_time = time.perf_counter()
+            step_iter_time = time.time()
+            current_iter += 1
 
             lr_imgs, hr_imgs = lr_imgs.to(device), hr_imgs.to(device)
 
@@ -120,11 +131,16 @@ def train(args):
 
             loss_D.backward()
             optimizer_D.step()
+            scheduler_D.step()
 
             # генератор
+            for p in netD.parameters():
+                p.requires_grad = False
+
             optimizer_G.zero_grad()
             pred_fake_g = netD(sr_imgs)
-            pred_real_g = netD(hr_imgs).detach()
+            with torch.no_grad():
+                pred_real_g = netD(hr_imgs)
 
             # Pixel Loss (L1), Perceptual Loss (VGG)
             if args.model == 'rgb':
@@ -136,7 +152,7 @@ def train(args):
 
             elif args.model == 'rgb_lpips':
                 loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
-                loss_percep = lpips_.forward(sr_imgs, hr_imgs, normalize=True).sum()
+                loss_percep = lpips_.forward(sr_imgs, hr_imgs, normalize=True).mean()
 
             elif args.model == 'yuv':
                 yuv_sr = rgb_to_yuv(sr_imgs)
@@ -163,14 +179,31 @@ def train(args):
             
             loss_G.backward()
             optimizer_G.step()
+            scheduler_G.step()
+
+            for p in netD.parameters():
+                p.requires_grad = True
 
             train_loss += loss_G.item()
 
             step_time = time.perf_counter() - step_start_time
             current_fps = lr_imgs.size(0) / step_time
             total_fps += current_fps
+            loss_meter.update(loss_G.item(), n=lr_imgs.size(0))
+            iter_time = time.time() - step_iter_time
+            timer_iter.update(iter_time)
 
-            loop.set_postfix(L_G=loss_G.item(), L_D=loss_D.item(), FPS=f"{current_fps:.1f}")
+            if current_iter % print_freq == 0:
+                current_lr = optimizer_G.param_groups[0]['lr']
+                log_message = (f"epoch: {epoch + 1:3d}, iter: {current_iter:7d}/{total_iters}, "
+                f"lr: ({current_lr:.4e},), "
+                f"time: {timer_iter.avg:.4f}, "
+                f"loss_G: {loss_meter.avg:.4f}")
+                logger.info(log_message)
+                timer_iter.reset()
+                loss_meter.reset()
+
+            iter_start_time = time.time()
 
         avg_fps = total_fps / len(train_loader)
         avg_train_loss = train_loss / len(train_loader)
@@ -178,15 +211,17 @@ def train(args):
         avg_train_ssim = train_ssim / len(train_loader)
         epoch_duration = time.perf_counter() - epoch_start_time
 
-        writer.add_scalar('Loss/Train', avg_train_loss, epoch)
         writer.add_scalar('Performance/Avg_FPS', avg_fps, epoch)
         writer.add_scalar('Performance/Epoch_Duration_sec', epoch_duration, epoch)
 
-        print(f"\nAvg FPS = {avg_fps:.2f} | Epoch time = {epoch_duration:.2f} sec.")
+        logger.info(f"Avg FPS = {avg_fps:.2f} | Epoch time = {epoch_duration:.2f} sec.")
 
         # Валидация
         netG.eval()
         netD.eval()
+
+        psnr_metric.reset()
+        ssim_metric.reset()
 
         val_psnr, val_ssim, val_lpips, val_dists = 0.0, 0.0, 0.0, 0.0
         val_loss = 0.0
@@ -208,7 +243,7 @@ def train(args):
 
                 elif args.model == 'rgb_lpips':
                     loss_pixel = criterion_pixel(sr_imgs, hr_imgs)
-                    loss_percep = lpips_.forward(sr_imgs, hr_imgs, normalize=True).sum()
+                    loss_percep = lpips_.forward(sr_imgs, hr_imgs, normalize=True).mean()
 
                 elif args.model == 'yuv':
                     yuv_sr = rgb_to_yuv(sr_imgs)
@@ -245,10 +280,7 @@ def train(args):
         val_lpips /= len(val_loader)
         val_dists /= len(val_loader)
 
-        print(f"Val - PSNR: {val_psnr:.2f} | Val - SSIM: {val_ssim:.2f} | LPIPS: {val_lpips:.4f} | DISTS: {val_dists:.4f}")
-
-        scheduler_G.step()
-        scheduler_D.step()
+        logger.info(f"Validation: Epoch: {epoch + 1}, Val_PSNR: {val_psnr:.2f}, Val_SSIM: {val_ssim:.2f}, LPIPS: {val_lpips:.4f}, DISTS: {val_dists:.4f}")
 
         current_lr_G = optimizer_G.param_groups[0]['lr']
         current_lr_D = optimizer_D.param_groups[0]['lr']
@@ -257,7 +289,7 @@ def train(args):
         if val_lpips < best_lpips:
             best_lpips = val_lpips
             torch.save(netG.state_dict(), f'./checkpoints/esrgan_{args.model}.pth')
-            print("Best model is saved.")
+            logger.info(f"Best ESRGAN model saved to ./checkpoints/esrgan_{args.model}.pth")
 
         # Tensorboard
         writer.add_scalars('Loss/Total', {'train': avg_train_loss, 'val': val_loss}, epoch)
@@ -268,6 +300,9 @@ def train(args):
         writer.add_scalar('LR/Generator', current_lr_G, epoch)
         writer.add_scalar('LR/Discriminator', current_lr_D, epoch)
 
+        psnr_metric.reset()
+        ssim_metric.reset() 
+
     total_training_time = time.perf_counter() - total_training_start_time
     hours = int(total_training_time // 3600)
     minutes = int((total_training_time % 3600) // 60)
@@ -275,8 +310,7 @@ def train(args):
 
     writer.add_scalar('Performance/Total_Training_Time_sec', total_training_time, 0)
     writer.close()
-
-    print(f"Training is over, total time: {hours}h {minutes}m {seconds}s")
+    logger.info(f"Training is over, total time: {hours}h {minutes}m {seconds}s")
 
 
 if __name__ == '__main__':
@@ -296,5 +330,12 @@ if __name__ == '__main__':
                         help='Scale parametr (default: 2)')
     
     parsed_args = parser.parse_args()
+
+    log_format = '%(asctime)s INFO: %(message)s'
+    logging.basicConfig(level=logging.INFO,
+                        format=log_format,
+                        datefmt='%Y-%m-%d %H:%M:%S',
+                        handlers=[logging.StreamHandler(),
+                                logging.FileHandler(f"train_psnr_{parsed_args.model}.log", encoding='utf-8')])
     
     train(parsed_args)
