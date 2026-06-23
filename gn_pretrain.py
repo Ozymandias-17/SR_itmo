@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from lr_scheduler import CosineAnnealingRestartLR
 from torch.utils.tensorboard import SummaryWriter
 import logging
-from utils import AverageMeter
+from utils import AverageMeter, seed_everything
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
 from nn_arch.RRDBNet_arch import RRDBNet
@@ -17,6 +17,8 @@ from nn_arch.YUV_net_arch import YUV_Generator, rgb_to_yuv
 from dataloader import DF2KDataset
 
 def train_psnr(args):
+    seed_everything(42)
+    
     logger = logging.getLogger('gn_net')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"PSNR Pre-training on device: {device}")
@@ -36,8 +38,11 @@ def train_psnr(args):
     else:
         raise ValueError(f"Unknown model {args.model}")
     
-    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False)
+    g = torch.Generator()
+    g.manual_seed(42)
+
+    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True, generator=g)
+    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False, generator=g)
 
     steps_per_epoch = len(train_loader)
     total_iters = args.epochs * steps_per_epoch

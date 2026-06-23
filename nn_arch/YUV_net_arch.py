@@ -22,11 +22,11 @@ def yuv_to_rgb(img):
 
 
 class YUV_Generator(nn.Module):
-    def __init__(self, in_nc=3, out_nc=3, nf=64, nb=23, gc=32, scale=2):
+    def __init__(self, in_nc=1, out_nc=1, nf=64, nb=23, gc=32, scale=2):
         super(YUV_Generator, self).__init__()
 
-        self.y_net = RRDBNet(in_nc=1, out_nc=1, nf=nf, nb=nb, gc=gc)
         self.scale = scale
+        self.y_net = RRDBNet(in_nc=1, out_nc=1, nf=64, nb=23, gc=32)
 
     def forward(self, rgb_lr):
         yuv_lr = rgb_to_yuv(rgb_lr)

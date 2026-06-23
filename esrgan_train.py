@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import MultiStepLR
 from torchvision.models import vgg19, VGG19_Weights
 from torch.utils.tensorboard import SummaryWriter
 import logging
-from utils import AverageMeter
+from utils import AverageMeter, seed_everything
 
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 import lpips
@@ -25,6 +25,8 @@ from dataloader import DF2KDataset
 
 
 def train(args):
+    seed_everything(42)
+
     logger = logging.getLogger('ESRGAN')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Train on device: {device}")
@@ -43,9 +45,12 @@ def train(args):
         print(f"Model 'yuv': prior channel y (in_nc=1, out_nc=1, nf={nf_base}, gc={gc_base}).")
     else:
         raise ValueError(f"Unknown model {args.model}")
+    
+    g = torch.Generator()
+    g.manual_seed(42)
 
-    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False)
+    train_loader = DataLoader(DF2KDataset('train', scale=args.scale, lr_patch_size=args.lr_patch_size), batch_size=args.batch_size, shuffle=True, generator=g)
+    val_loader = DataLoader(DF2KDataset('val', scale=args.scale), batch_size=1, shuffle=False, generator=g)
     
     # Инициализация моделей
     netD = VGGDiscriminator(in_nc=3, nf=nf_base).to(device)
@@ -55,6 +60,42 @@ def train(args):
         p.requires_grad = False
     
     # netG.load_state_dict(torch.load(f'./checkpoints/pretrained_gn_{args.model}.pth'))
+
+    '''
+    pretrained_path = f'./checkpoints/ESRGAN_PSNR_SRx4_DF2K_official-150ff491.pth'
+    if os.path.exists(pretrained_path):
+        print(f"Loading pretrained generator weights from {pretrained_path}...")
+        state_dict = torch.load(pretrained_path, map_location=device)
+        
+        if args.model == 'yuv':
+            has_prefix = any(k.startswith('y_net.') for k in state_dict.keys())
+            
+            if not has_prefix:
+                # префикс 'y_net.'
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    # обработка слоев ввода/вывода, если они имели 3 канала (RGB), а стали 1 (Y)
+                    if k == 'conv_first.weight' and v.shape[1] == 3:
+                        print("Adapting conv_first from 3 channels to 1 channel (YUV)...")
+                        v_y = 0.299 * v[:, 0:1, :, :] + 0.587 * v[:, 1:2, :, :] + 0.114 * v[:, 2:3, :, :]
+                        v = v_y
+                    if k == 'conv_last.weight' and v.shape[0] == 3:
+                        print("Adapting conv_last from 3 channels to 1 channel (YUV)...")
+                        v = v.mean(dim=0, keepdim=True)
+                        
+                    new_state_dict[f'y_net.{k}'] = v
+                state_dict = new_state_dict
+            
+            netG.load_state_dict(state_dict, strict=False)
+        else:
+            netG.load_state_dict(state_dict, strict=True)
+        
+        print("Generator weights loaded successfully")
+    
+    else:
+        print(f"Warning: Pretrained weights {pretrained_path} not found. Training from scratch.")
+
+    '''
 
     # Оптимизаторы
     steps_per_epoch = len(train_loader)
@@ -320,9 +361,9 @@ if __name__ == '__main__':
                         help='Model: rgb, rgb_lpips, yuv (default: rgb)')
     parser.add_argument('--epochs', type=int, default=100, 
                         help='Number of epochs (default: 100)')
-    parser.add_argument('--batch_size', type=int, default=16, 
+    parser.add_argument('--batch_size', type=int, default=8, 
                         help='default: 16')
-    parser.add_argument('--lr_patch_size', type=int, default=64, 
+    parser.add_argument('--lr_patch_size', type=int, default=16, 
                         help='Patch size of LR images (default: 64)')
     parser.add_argument('--lr', type=float, default=1e-4, 
                         help='Initial Learning Rate (default: 1e-4)')

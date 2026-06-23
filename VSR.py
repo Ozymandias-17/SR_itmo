@@ -31,14 +31,14 @@ def run_esrgan(input_folder: str,
 
     model_path = f'./checkpoints/esrgan_{mode}.pth'
 
-    if mode == 'rgb':
+    if mode== 'rgb':
         nf_base, gc_base = 64, 32
         model = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
         print(f"Model 'rgb': standard channels (nf={nf_base}, gc={gc_base}).")
     elif mode == 'rgb_lpips':
         nf_base, gc_base = 64, 32
         model = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
-        print(f"Model 'rgb2': standard channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
+        print(f"Model 'rgb_lpips': standard channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
     elif mode == 'yuv':
         nf_base, gc_base = 64, 32
         model = YUV_Generator(in_nc=1, out_nc=1, nf=nf_base, nb=23, gc=gc_base).to(device)

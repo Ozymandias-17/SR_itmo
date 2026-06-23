@@ -8,6 +8,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 import json
 from datetime import datetime
+from utils import seed_everything
 
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 import lpips
@@ -19,6 +20,8 @@ from dataloader import DF2KDataset
 
 
 def validate():
+    seed_everything(42)
+
     parser = argparse.ArgumentParser(description='ESRGAN Testing')
     parser.add_argument('--model', type=str, default='rgb', 
                         help='Model: rgb, rgb_lpips, yuv')
@@ -47,13 +50,16 @@ def validate():
         print(f"Model 'yuv': prior channel y (in_nc=1, out_nc=1, nf={nf_base}, gc={gc_base}).")
     else:
         raise ValueError(f"Unknown model {args.model}")
-
+    
     model.load_state_dict(torch.load(f'./checkpoints/esrgan_{args.model}.pth', map_location=device))
     model.eval()
     print(f"Weights are downloaded: {args.weights}")
 
+    g = torch.Generator()
+    g.manual_seed(42)
+
     val_dataset = DF2KDataset(split='val', scale=args.scale)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, generator=g)
     print(f"Found {len(val_loader)} images in validation set.")
 
     psnr_metric = PeakSignalNoiseRatio(data_range=1.0).to(device)
@@ -120,6 +126,7 @@ def validate():
 
 
 def inference():
+    seed_everything(42)
 
     parser = argparse.ArgumentParser(description='ESRGAN Inference')
     parser.add_argument('--input', type=str, required=True, 
@@ -136,11 +143,11 @@ def inference():
     if args.model == 'rgb':
         nf_base, gc_base = 64, 32
         model = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
-        print(f"Model 'rgb': standart channels (nf={nf_base}, gc={gc_base}).")
+        print(f"Model 'rgb': standard channels (nf={nf_base}, gc={gc_base}).")
     elif args.model == 'rgb_lpips':
         nf_base, gc_base = 64, 32
         model = RRDBNet(in_nc=3, out_nc=3, nf=nf_base, nb=23, gc=gc_base).to(device)
-        print(f"Model 'rgb_lpips': standart channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
+        print(f"Model 'rgb_lpips': standard channels (nf={nf_base}, gc={gc_base}) with lpips loss.")
     elif args.model == 'yuv':
         nf_base, gc_base = 64, 32
         model = YUV_Generator(in_nc=1, out_nc=1, nf=nf_base, nb=23, gc=gc_base).to(device)
