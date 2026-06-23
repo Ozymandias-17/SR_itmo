@@ -331,11 +331,14 @@ if __name__ == '__main__':
     
     parsed_args = parser.parse_args()
 
+    log_dir = "train_logs"
+    os.makedirs(log_dir, exist_ok=True)
+
     log_format = '%(asctime)s INFO: %(message)s'
     logging.basicConfig(level=logging.INFO,
                         format=log_format,
                         datefmt='%Y-%m-%d %H:%M:%S',
                         handlers=[logging.StreamHandler(),
-                                logging.FileHandler(f"train_psnr_{parsed_args.model}.log", encoding='utf-8')])
+                                  logging.FileHandler(os.path.join(log_dir, f"esrgan_{parsed_args.model}.log"), encoding='utf-8')])
     
     train(parsed_args)
